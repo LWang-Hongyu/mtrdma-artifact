@@ -1,0 +1,14 @@
+IBVERBS_1.1 {
+    global:
+        ibv_create_qp;
+        ibv_destroy_qp;
+        ibv_open_device;
+        ibv_create_cq;
+        ibv_destroy_cq;
+        ibv_alloc_pd;
+        ibv_dealloc_pd;
+        ibv_reg_mr;
+        ibv_dereg_mr;
+    local:
+        *;
+};

@@ -1,0 +1,232 @@
+#!/bin/bash
+# rdma_tenant_ctl - RDMA Tenant Manager Control Script
+# 
+# 用法：
+#   rdma_tenant_ctl start              # 启动守护进程
+#   rdma_tenant_ctl stop               # 停止守护进程
+#   rdma_tenant_ctl restart            # 重启守护进程
+#   rdma_tenant_ctl status             # 查看守护进程状态
+# 
+#   rdma_tenant_ctl create <id> <qp> <mr> [mem] [name]   # 创建租户
+#   rdma_tenant_ctl update <id> <qp> <mr> [mem]          # ★ 热更新配额
+#   rdma_tenant_ctl delete <id>                        # 删除租户
+#   rdma_tenant_ctl tenant-status [id]                 # 查看租户状态
+#   rdma_tenant_ctl list                               # 列出所有租户
+#
+# 示例：
+#   # 启动守护进程
+#   sudo rdma_tenant_ctl start
+#   
+#   # 创建租户
+#   rdma_tenant_ctl create 20 100 100 1073741824 "Attacker"
+#   
+#   # 应用启动后动态调整配额
+#   rdma_tenant_ctl update 20 50 50   # 收紧配额
+#   rdma_tenant_ctl update 20 200 200 # 放宽配额
+
+PID_FILE="/tmp/rdma_tenant_manager.pid"
+SOCKET="/tmp/rdma_tenant_manager.sock"
+DAEMON_BIN="./tenant_manager_daemon"
+CLIENT_BIN="./tenant_manager_client"
+
+# 检查二进制文件是否存在
+check_binaries() {
+    if [ ! -f "$DAEMON_BIN" ]; then
+        DAEMON_BIN="./build/tenant_manager_daemon"
+    fi
+    if [ ! -f "$CLIENT_BIN" ]; then
+        CLIENT_BIN="./build/tenant_manager_client"
+    fi
+    
+    if [ ! -f "$DAEMON_BIN" ]; then
+        echo "Error: tenant_manager_daemon not found"
+        echo "Please build the project first"
+        exit 1
+    fi
+    if [ ! -f "$CLIENT_BIN" ]; then
+        echo "Error: tenant_manager_client not found"
+        echo "Please build the project first"
+        exit 1
+    fi
+}
+
+# 启动守护进程
+start_daemon() {
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            echo "Manager daemon already running (PID: $PID)"
+            return 0
+        fi
+        rm -f "$PID_FILE"
+    fi
+    
+    echo "Starting RDMA Tenant Manager daemon..."
+    $DAEMON_BIN --daemon
+    sleep 1
+    
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        echo "✓ Daemon started (PID: $PID)"
+        echo "  Socket: $SOCKET"
+    else
+        echo "✗ Failed to start daemon"
+        return 1
+    fi
+}
+
+# 前台启动（调试）
+start_foreground() {
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            echo "Manager daemon already running (PID: $PID)"
+            return 0
+        fi
+    fi
+    
+    echo "Starting RDMA Tenant Manager daemon (foreground mode)..."
+    $DAEMON_BIN --daemon --foreground
+}
+
+# 停止守护进程
+stop_daemon() {
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        echo "Stopping RDMA Tenant Manager daemon (PID: $PID)..."
+        kill "$PID" 2>/dev/null
+        rm -f "$PID_FILE"
+        sleep 1
+        echo "✓ Daemon stopped"
+    else
+        echo "Manager daemon not running"
+    fi
+    rm -f "$SOCKET"
+}
+
+# 查看守护进程状态
+daemon_status() {
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        if kill -0 "$PID" 2>/dev/null; then
+            echo "Manager daemon is running (PID: $PID)"
+            echo "  Socket: $SOCKET"
+            if [ -S "$SOCKET" ]; then
+                echo "  Socket: OK"
+            else
+                echo "  Socket: NOT FOUND"
+            fi
+            return 0
+        else
+            echo "Manager daemon PID file exists but process not running"
+            rm -f "$PID_FILE"
+            return 1
+        fi
+    else
+        echo "Manager daemon is not running"
+        return 1
+    fi
+}
+
+# 创建租户
+create_tenant() {
+    check_binaries
+    $CLIENT_BIN create "$@"
+}
+
+# 删除租户
+delete_tenant() {
+    check_binaries
+    $CLIENT_BIN delete "$@"
+}
+
+# 更新配额（热更新）
+update_quota() {
+    check_binaries
+    echo "★ Hot Update: Updating quota without application restart"
+    $CLIENT_BIN update "$@"
+}
+
+# 查看租户状态
+tenant_status() {
+    check_binaries
+    $CLIENT_BIN status "$@"
+}
+
+# 列出所有租户
+list_tenants() {
+    check_binaries
+    $CLIENT_BIN list
+}
+
+# 打印用法
+print_usage() {
+    echo "Usage: $0 <command> [args...]"
+    echo ""
+    echo "Daemon Management:"
+    echo "  start                Start the manager daemon"
+    echo "  start-fg             Start daemon in foreground (debug)"
+    echo "  stop                 Stop the manager daemon"
+    echo "  restart              Restart the manager daemon"
+    echo "  status               Check daemon status"
+    echo ""
+    echo "Tenant Management:"
+    echo "  create <id> <qp> <mr> [mem] [name]   Create a new tenant"
+    echo "  delete <id>                          Delete a tenant"
+    echo "  update <id> <qp> <mr> [mem]          ★ Hot update quota"
+    echo "  tenant-status [id]                   Show tenant status"
+    echo "  list                                 List all tenants"
+    echo ""
+    echo "Examples:"
+    echo "  $0 start                            # Start daemon"
+    echo "  $0 create 20 100 100 \"TestTenant\"   # Create tenant"
+    echo "  $0 update 20 50 50                  # Dynamic quota update"
+    echo "  $0 list                             # Show all tenants"
+}
+
+# 主命令处理
+case "$1" in
+    start)
+        check_binaries
+        start_daemon
+        ;;
+    start-fg|start-foreground)
+        check_binaries
+        start_foreground
+        ;;
+    stop)
+        stop_daemon
+        ;;
+    restart)
+        stop_daemon
+        sleep 1
+        check_binaries
+        start_daemon
+        ;;
+    status)
+        daemon_status
+        ;;
+    create)
+        shift
+        create_tenant "$@"
+        ;;
+    delete)
+        shift
+        delete_tenant "$@"
+        ;;
+    update|set-quota)
+        shift
+        update_quota "$@"
+        ;;
+    tenant-status|tenant_status)
+        shift
+        tenant_status "$@"
+        ;;
+    list|ls)
+        list_tenants
+        ;;
+    *)
+        print_usage
+        exit 1
+        ;;
+esac

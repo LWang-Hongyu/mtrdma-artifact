@@ -1,0 +1,45 @@
+#!/bin/bash
+# <!-- created at: 2026-02-04 19:00:00 -->
+
+echo "清理现有进程..."
+sudo pkill -f rdma_monitor 2>/dev/null
+sudo pkill -f collector_server 2>/dev/null
+
+# 清空现有的eBPF映射数据
+sudo rm -rf /sys/fs/bpf/process_resources /sys/fs/bpf/global_resources
+
+echo "启动eBPF监控程序..."
+sudo timeout 30s ./rdma_monitor &
+MONITOR_PID=$!
+
+sleep 3  # 等待监控程序启动
+
+echo "启动collector_server (设置QP限制为2)..."
+export RDMA_INTERCEPT_MAX_GLOBAL_QP=2
+sudo -E timeout 30s ./collector_server &
+COLLECTOR_PID=$!
+
+sleep 3  # 等待collector_server启动
+
+echo "初始状态检查:"
+./test_collector_comm
+
+echo ""
+echo "使用拦截库运行全局限制测试..."
+
+# 设置拦截库环境变量
+export RDMA_INTERCEPT_ENABLE=1
+export RDMA_INTERCEPT_ENABLE_QP_CONTROL=1
+
+# 使用拦截库运行测试
+LD_LIBRARY_PATH=.:$LD_LIBRARY_PATH LD_PRELOAD=./librdma_intercept.so ./test_global_limit
+
+echo ""
+echo "测试后状态检查:"
+./test_collector_comm
+
+# 结束进程
+sudo kill $MONITOR_PID $COLLECTOR_PID 2>/dev/null || true
+
+echo ""
+echo "测试完成"
